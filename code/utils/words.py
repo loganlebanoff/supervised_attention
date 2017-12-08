@@ -1,6 +1,7 @@
 import os
 import numpy as np
-import cPickle as pickle
+# import cPickle as pickle
+import pickle
 
 class WordTable():
     def __init__(self, vocab_size, dim_embed, max_sent_len, save_file):
@@ -54,14 +55,19 @@ class WordTable():
         indices[:len(words)] = words
         masks[:len(words)] = 1.0
         return indices, masks
-
-    def indices_to_sent(self, indices):
-        """ Translate a vector of indicies into a sentence. """
+    
+    def indices_to_words(self, indices):
+        """ Translate a vector of indicies into list of words. """
         words = [self.idx2word[i] for i in indices]
         if words[-1] != '.':
             words.append('.')
         punctuation = np.argmax(np.array(words) == '.') + 1
         words = words[:punctuation]
+        return words
+
+    def indices_to_sent(self, indices):
+        """ Translate a vector of indicies into a sentence. """
+        words = self.indices_to_words(indices)
         res = ' '.join(words)
         res = res.replace(' ,', ',')
         res = res.replace(' ;', ';')

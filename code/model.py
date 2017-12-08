@@ -2,6 +2,7 @@ import math
 import os
 import tensorflow as tf
 import numpy as np
+from nltk.corpus import wordnet as wn
 
 from base_model import *
 from utils.nn import *
@@ -462,9 +463,10 @@ class CaptionGenerator(BaseModel):
         """ Get the feed dictionary for the current batch. """
         if is_train:
             # training phase
-            img_files, sentences, masks, segmentations = batch
+            img_files, sentences, masks, img_ids = batch
             imgs = self.img_loader.load_imgs(img_files)
-            attention_gold_standards = self.create_attention_gold_standards(imgs, sentences, segmentations, img_files)
+            segmentations = self.img_loader.load_segmentations(img_ids)
+            attention_gold_standards, attention_masks = self.create_attention_gold_standards(sentences, segmentations)
 
             for i in range(self.batch_size):
                 word_weight = self.word_weight[sentences[i, :]]                
@@ -493,19 +495,149 @@ class CaptionGenerator(BaseModel):
                 else:
                     return {self.contexts: contexts, self.sentences: fake_sentences, self.is_train: is_train} 
 
-def create_attention_gold_standards(self, imgs, sentences, segmentations, img_files):
-        from matplotlib.patches import Polygon
-        from PIL import Image, ImageDraw
-        seg = segmentations[0]
-        poly = np.array(seg).reshape((int(len(seg)/2), 2)).flatten().tolist()
-        tmp = Image.new('L', (imgs[0].shape[0], imgs[0].shape[1]), 0)
-        ImageDraw.Draw(tmp).polygon(poly, outline=1, fill=1)
-        mask = np.array(tmp)
-        a=0
+'''
+--------------------------------
+
+Added by Logan
+
+--------------------------------
+'''
+    def create_attention_gold_standards(self, sentences, segmentations):
+        ''' 
+        Creates the attention groundtruths from the batch sentences and segmentations 
+        Returns two numpy arrays:
+            res.shape        [batch_size, sentence_length, 14, 14]
+            res_mask.shape   [batch_size, sentence_length]
+        res is the groundtruth for the attention mechanism at each time step of the sentence
+        res_mask is a binary mask which turns controls which time steps will not be considered towards
+          the loss (i.e., the words that were not aligned with any segmentations)
+        '''
+        for i in range(self.batch_size):
+            res = np.zeros([self.batch_size, self.params.max_sent_len, self.segmentation_scale_shape[0], self.segmentation_scale_shape[1]])
+            res_mask = np.zeros([self.batch_size, self.params.max_sent_len])
+            seg_dict = segmentations[i]         # Holds segmentations. Maps label to 14x14 segmentation mask
+            sentence = sentences[i]
+            seg_labels = seg_dict.keys()
+            words = self.word_table.indices_to_words(sentence)
+            
+            # For each time step (word) in the sentence
+            word_idx = 0
+            while word_idx < len(words):
+                word = words[word_idx]
+                label_match = None
+                
+                # First, try finding a match using bigram from sentence
+                if word_idx < (len(words) - 1):
+                    next_word = words[word_idx + 1]
+                    label_match = self.find_best_match_for_word(word + ' ' + next_word, seg_labels)
+                    
+                        # If a matching label was found, then fetch its attention mask
+                    if label_match is not None:
+                        res[i,word_idx] = seg_dict[label_match]
+                        res[i,word_idx+1] = seg_dict[label_match]
+                        res_mask[i,word_idx] = 1
+                        res_mask[i,word_idx+1] = 1
+                        word_idx += 2
+                        continue
+                    
+                # If the bigram didn't match, try finding a match using unigram from sentence
+                if label_match is None:
+                    label_match = self.find_best_match_for_word(word, seg_labels)
+                    
+                    # If a matching label was found, then fetch its attention mask
+                    if label_match is not None:
+                        res[i,word_idx] = seg_dict[label_match]
+                        res_mask[i,word_idx] = 1
+                        word_idx += 1
+                        continue
+                    
+                # If that didn't work either, then this word will not have segmentation annotations
+                word_idx += 1
+        return res, res_mask
+                    
+    def find_best_match_for_word(self, word, labels, threshold=3):
+        ''' Checks each segmentation label, and finds which one matches best with the given word '''
+        word_synsets = self.get_word_synsets(word)
+        labels_synsets = self.get_label_synsets(labels)
+        
+        # Keep track of the best match (shortest distance between word and label)
+        min_dist = 100
+        best_label_idx = None
+        
+        # For each pair of word and segmentation label
+        for word_synset in word_synsets:
+            for label_idx, label_synset in enumerate(label_synsets):
+                dist = wn.shortest_path_distance(word_synset, label_synset)
+                
+                # If the path is shorter than the best, then this is the new best
+                if dist is not None and dist < min_dist:
+                    min_dist = dist
+                    best_label_idx = label_idx
+                    
+        # Return best label as long as it is close enough to the word
+        if min_dist <= threshold:
+            return labels[best_label_idx]
+        else:
+            return None
+        
+    def get_word_synsets(self, word):
+        ''' Get all meanings of the word from WordNet (as WordNet classes) '''
+        word = self.lemmatizer.lemmatize(word, pos='n')     # Convert to lemma
+        word_synsets = self.check_for_special_case(word)    # Try certain hard-coded special cases
+        
+        # If the word wasn't a special case
+        if word_synsets is None:
+            word_synsets = wn.synsets(word, wn.NOUN)    # Get all possible meanings of the word from WordNet
+            if len(word_synsets) == 0:
+                return None                             # If WordNet didn't find anything, then failure
+            word_synsets = word_synsets[:min(4, len(word_synsets))]     # Limit to the top 4 meanings
+        return word_synsets
+    
+    def get_label_synsets(self, labels):
+        ''' Get the WordNet classes for all the possible labels '''
+        return [self.label_to_synset(lbl) for lbl in labels]
+        
+    def label_to_synset(self, label):
+        ''' Get WordNet class for one label '''
+        synset = self.check_for_special_case(label)
+        if synset is not None:
+            return synset
+        return self.syn(label)
+        
+    def check_for_special_case(self, term):
+        ''' There are special cases that are hard-coded (like stop_sign, mouse) that we have to manually check for '''
+        return [self.special_wn_cases.get(term, None)]
+    
+    def syn(self, string, def_idx=0):
+        ''' Gets the WordNet class for a word(s) with an optional definition index '''
+        if ' ' in string:
+            string = '_'.join(string.split(' '))
+        synsets = wn.synsets(string, pos=wn.NOUN)
+        if def_idx >= len(synsets):
+            raise Exception('Idx is greater than number of synsets for ' +string)
+        return synsets[def_idx]
+    
 
 if __name__=="__main__":
     import main
     main.main(sys.argv)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

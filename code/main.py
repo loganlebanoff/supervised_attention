@@ -8,6 +8,8 @@ from model import *
 from dataset import *
 #from utils.coco.coco import *
 from pycocotools.coco import *
+from signal import signal, SIGPIPE, SIG_DFL
+signal(SIGPIPE,SIG_DFL) 
 
 def main(argv):
     parser = argparse.ArgumentParser()
@@ -17,27 +19,28 @@ def main(argv):
     
     parser.add_argument('--mean_file', default='./utils/ilsvrc_2012_mean.npy', help='Dataset image mean: a Numpy array with (Channel, Height, Width) dimensions')
     parser.add_argument('--cnn_model', default='vgg16', help='CNN model to use: Can be vgg16, resnet50, resnet101 or resnet152')
-    parser.add_argument('--cnn_model_file', default='./tfmodels/vgg16.tfmodel', help='Tensorflow model file for the chosen CNN model')
-    parser.add_argument('--load_cnn_model', action='store_true', default=False, help='Turn on to load the pretrained CNN model')
+    parser.add_argument('--cnn_model_file', default='/home/logan/tfmodels/vgg16.npy', help='Tensorflow model file for the chosen CNN model')
+    parser.add_argument('--load_cnn_model', action='store_true', default=True, help='Turn on to load the pretrained CNN model')
     parser.add_argument('--train_cnn', action='store_true', default=False, help='Turn on to jointly train CNN and RNN. Otherwise, only RNN is trained')
+    parser.add_argument('--ignore_missing_cnn_vars', action='store_true', default=False, help='Turn on to load the pretrained model') # Logan added
 
-    parser.add_argument('--train_image_dir', default='../data/train/images/', help='Directory containing the COCO train2014 images')
-    parser.add_argument('--train_caption_file', default='../data/train/captions_train2014.json', help='JSON file storing the captions for COCO train2014 images')
-    parser.add_argument('--train_instance_file', default='../data/train/instances_train2014.json', help='JSON file storing the segmentation annotations for COCO train2014 images')
-    parser.add_argument('--train_annotation_file', default='../data/train/anns.csv', help='Temporary file to store the training information')
-    parser.add_argument('--train_segmentation_annotation_dir', default='../data/train/segmentations/', help='Generated directory to store the training segmentations')
+    parser.add_argument('--train_image_dir', default='/home/logan/data/supervised_attention/train/images/', help='Directory containing the COCO train2014 images')
+    parser.add_argument('--train_caption_file', default='/home/logan/data/supervised_attention/train/captions_train2014.json', help='JSON file storing the captions for COCO train2014 images')
+    parser.add_argument('--train_instance_file', default='/home/logan/data/supervised_attention/train/instances_train2014.json', help='JSON file storing the segmentation annotations for COCO train2014 images')
+    parser.add_argument('--train_annotation_file', default='/home/logan/data/supervised_attention/train/anns.csv', help='Temporary file to store the training information')
+    parser.add_argument('--train_segmentation_annotation_dir', default='/home/logan/data/supervised_attention/train/segmentations/', help='Generated directory to store the training segmentations')
 
-    parser.add_argument('--val_image_dir', default='../data/val/images/', help='Directory containing the COCO val2014 images')
-    parser.add_argument('--val_caption_file', default='../data/val/captions_val2014.json', help='JSON file storing the captions for COCO val2014 images')
-    parser.add_argument('--val_instances_file', default='../data/val/instances_val2014.json', help='JSON file storing the segmentation annotations for COCO val2014 images')
-    parser.add_argument('--val_result_dir', default='../data/val/results/', help='Directory to store the validation results as images')
+    parser.add_argument('--val_image_dir', default='/home/logan/data/supervised_attention/val/images/', help='Directory containing the COCO val2014 images')
+    parser.add_argument('--val_caption_file', default='/home/logan/data/supervised_attention/val/captions_val2014.json', help='JSON file storing the captions for COCO val2014 images')
+    parser.add_argument('--val_instances_file', default='/home/logan/data/supervised_attention/val/instances_val2014.json', help='JSON file storing the segmentation annotations for COCO val2014 images')
+    parser.add_argument('--val_result_dir', default='/home/logan/data/supervised_attention/val/results/', help='Directory to store the validation results as images')
 
-    parser.add_argument('--test_image_dir', default='../data/test/images/', help='Directory containing the testing images')
-    parser.add_argument('--test_result_file', default='../data/test/results.csv', help='File to store the testing results')
-    parser.add_argument('--test_result_dir', default='../data/test/results/', help='Directory to store the testing results as images')
+    parser.add_argument('--test_image_dir', default='/home/logan/data/supervised_attention/test/images/', help='Directory containing the testing images')
+    parser.add_argument('--test_result_file', default='/home/logan/data/supervised_attention/test/results.csv', help='File to store the testing results')
+    parser.add_argument('--test_result_dir', default='/home/logan/data/supervised_attention/test/results/', help='Directory to store the testing results as images')
 
-    parser.add_argument('--word_table_file', default='../data/words/word_table.pickle', help='Temporary file to store the word table')
-    parser.add_argument('--glove_dir', default='../data/words/', help='Directory containing the GloVe data')
+    parser.add_argument('--word_table_file', default='/home/logan/data/supervised_attention/words/word_table.pickle', help='Temporary file to store the word table')
+    parser.add_argument('--glove_dir', default='/home/logan/data/supervised_attention/words/', help='Directory containing the GloVe data')
     parser.add_argument('--max_sent_len', type=int, default=30, help='Maximum length of the generated caption')
     parser.add_argument('--vocab_size', type=int, default=5000, help='Maximum vocabulary size')
 
@@ -59,7 +62,7 @@ def main(argv):
     parser.add_argument('--dim_dec', type=int, default=1000, help='Dimension of the vector used for word generation')
     parser.add_argument('--num_init_layers', type=int, default=2, help='Number of layers in the MLP for initializing the LSTMs')
     parser.add_argument('--init_lstm_with_fc_feats', action='store_true', default=False, help='Turn on to initialize the LSTMs with fc7 feats of VGG16 net. Only useful if VGG16 is used')
-    parser.add_argument('--init_embed_with_glove', action='store_true', default=False, help='Turn on to initialize the word embedding with the GloVe data')  
+    parser.add_argument('--init_embed_with_glove', action='store_true', default=True, help='Turn on to initialize the word embedding with the GloVe data')  
     parser.add_argument('--fix_embed_weight', action='store_true', default=False, help='Turn on to fix the word embedding')
     parser.add_argument('--init_dec_bias', action='store_true', default=False, help='Turn on to initialize the bias for word generation with the frequency of each word')
     parser.add_argument('--class_balancing_factor', type=float, default=0.0, help='Class balancing factor. The larger it is, the model pays more attention to rare words.') 
@@ -87,7 +90,7 @@ def main(argv):
             if args.load:
                 model.load(sess)
             elif args.load_cnn_model:
-                model.load2(args.cnn_model_file, sess)
+                model.load2(args.cnn_model_file, sess, ignore_missing=args.ignore_missing_cnn_vars)
 
             model.train(sess, train_coco, train_data)
 

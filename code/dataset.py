@@ -2,7 +2,6 @@ import os
 import math
 import numpy as np
 import pandas as pd
-import cPickle as pickle
 import ast
 
 from utils.words import *
@@ -11,12 +10,11 @@ from utils.words import *
 from pycocotools.coco import *
 
 class DataSet():
-    def __init__(self, img_ids, img_files, caps=None, masks=None, segs=None, batch_size=1, is_train=False, shuffle=False):
+    def __init__(self, img_ids, img_files, caps=None, masks=None, batch_size=1, is_train=False, shuffle=False):
         self.img_ids = np.array(img_ids)
         self.img_files = np.array(img_files)
         self.caps = np.array(caps)
         self.masks = np.array(masks)
-        self.segs = np.array(segs)
         self.batch_size = batch_size
         self.is_train = is_train
         self.shuffle = shuffle
@@ -42,12 +40,12 @@ class DataSet():
         start, end = self.current_index, self.current_index + self.batch_size
         current_idx = self.indices[start:end]
         img_files = self.img_files[current_idx]
+        img_ids = self.img_ids[current_idx]
         if self.is_train:
             caps = self.caps[current_idx]
             masks = self.masks[current_idx]
-            segs = self.segs[current_idx]
             self.current_index += self.batch_size
-            return img_files, caps, masks, segs
+            return img_files, caps, masks, img_ids
         else:
             self.current_index += self.batch_size
             return img_files
@@ -59,7 +57,7 @@ class DataSet():
 
 def prepare_train_data(args):
     """ Prepare relevant data for training the model. """
-    image_dir, caption_file, segmentation_file, annotation_file = args.train_image_dir, args.train_caption_file, args.train_instance_file, args.train_annotation_file
+    image_dir, caption_file, segmentation_file, annotation_file, train_segmentation_annotation_dir = args.train_image_dir, args.train_caption_file, args.train_instance_file, args.train_annotation_file, args.train_segmentation_annotation_dir
     init_embed_with_glove, vocab_size, word_table_file, glove_dir = args.init_embed_with_glove, args.vocab_size, args.word_table_file, args.glove_dir
     dim_embed, batch_size, max_sent_len = args.dim_embed, args.batch_size, args.max_sent_len
 
@@ -80,25 +78,24 @@ def prepare_train_data(args):
     print("Word table built. Number of words = %d" %(word_table.num_words))
 
     coco_captions.filter_by_words(word_table.all_words())
+    overlap_image_ids = get_image_ids_with_cap_and_seg(coco_captions, coco_segmentations)
     
     if not os.path.exists(annotation_file):
-        annotations = process_captions(coco_captions, coco_segmentations, image_dir, annotation_file)
+        annotations = process_captions(coco_captions, overlap_image_ids, image_dir, annotation_file)
     else:
         annotations = pd.read_csv(annotation_file)
 
     img_ids = annotations['image_id'].values
     img_files = annotations['image_file'].values
     captions = annotations['caption'].values
-    segmentations = annotations['segmentation'].values
     print("Number of training captions = %d" %(len(captions)))
-    print("Number of training segmentations = %d" %(len(segmentations)))
 
     caps, masks = symbolize_captions(captions, word_table)
-    segs = [ast.literal_eval(seg) for seg in segmentations]
-    
+    #
+    save_segmentations(coco_segmentations, overlap_image_ids, train_segmentation_annotation_dir)
 
     print("Building the training dataset...")
-    dataset = DataSet(img_ids, img_files, caps, masks, segs, batch_size, True, True)
+    dataset = DataSet(img_ids, img_files, caps, masks, batch_size, True, True)
     print("Dataset built.")
     return coco_captions, dataset
 
@@ -116,7 +113,6 @@ def prepare_val_data(args):
     print("Dataset built.")
     return coco, dataset
 
-
 def prepare_test_data(args):
     """ Prepare relevant data for testing the model. """
     image_dir = args.test_image_dir
@@ -130,18 +126,18 @@ def prepare_test_data(args):
     print("Dataset built.")
     return dataset
 
-
-def process_captions(coco_captions, coco_segmentations, image_dir, annotation_file):
+def process_captions(coco_captions, overlap_image_ids, image_dir, annotation_file):
     """ Build an annotation file containing the training information. """
-    caption_image_ids = [coco_captions.anns[ann_id]['image_id'] for ann_id in coco_captions.anns]
-    segmentation_image_ids = [coco_segmentations.anns[ann_id]['image_id'] for ann_id in coco_segmentations.anns]
-    overlap = list(set(caption_image_ids) & set(segmentation_image_ids))
-    captions = [coco_captions.anns[ann_id]['caption'] for ann_id in coco_captions.anns if coco_captions.anns[ann_id]['image_id'] in overlap]
-#     segmentations = [' '.join(map(str, coco_segmentations.anns[ann_id]['segmentation'][0])) for ann_id in which_ids]
-    segmentations = [coco_segmentations.anns[ann_id]['segmentation'][0] for ann_id in coco_segmentations.anns if coco_segmentations.anns[ann_id]['image_id'] in overlap]
-    image_ids = [coco_captions.anns[ann_id]['image_id'] for ann_id in which_ids]
+    ann_ids = coco_captions.getAnnIds(imgIds=overlap_image_ids)
+    anns = coco_captions.loadAnns(ids=ann_ids)
+    captions = [ann['caption'] for ann in anns]
+    image_ids = [ann['image_id'] for ann in anns]
+#     captions = [coco_captions.anns[ann_id]['caption'] for ann_id in coco_captions.anns if coco_captions.anns[ann_id]['image_id'] in overlap_image_ids]
+# #     segmentations = [' '.join(map(str, coco_segmentations.anns[ann_id]['segmentation'][0])) for ann_id in which_ids]
+# #     segmentations = [coco_segmentations.anns[ann_id]['segmentation'][0] for ann_id in coco_segmentations.anns if coco_segmentations.anns[ann_id]['image_id'] in overlap]
+#     image_ids = [coco_captions.anns[ann_id]['image_id'] for ann_id in coco_captions.anns if coco_captions.anns[ann_id]['image_id'] in overlap_image_ids]
     image_files = [os.path.join(image_dir, coco_captions.imgs[img_id]['file_name']) for img_id in image_ids]
-    annotations = pd.DataFrame({'image_id': image_ids, 'image_file': image_files, 'caption': captions, 'segmentation': segmentations})
+    annotations = pd.DataFrame({'image_id': image_ids, 'image_file': image_files, 'caption': captions})
     annotations.to_csv(annotation_file)
     return annotations
 
@@ -155,6 +151,56 @@ def symbolize_captions(captions, word_table):
         caps.append(idx)
         masks.append(mask)
     return np.array(caps), np.array(masks)
+
+
+'''
+--------------------------------
+
+Added by Logan
+
+--------------------------------
+'''
+def save_segmentations(coco_segmentations, overlap_image_ids, train_segmentation_annotation_dir):
+    ''' Convert segmentations to binary masks and save to disk '''
+    catids = coco_segmentations.getCatIds()
+    cats = coco_segmentations.loadCats(catids)
+    id_to_word = {}
+    for cat in cats:
+        id_to_word[cat['id']] = cat['name']
+        
+    # For each image, get all the segmentation LABELS
+    for image_id in overlap_image_ids:
+        img = coco_segmentations.loadImgs(ids=image_id)[0]
+        ann_ids = coco_segmentations.getAnnIds(imgIds=image_id)
+        anns = coco_segmentations.loadAnns(ids=ann_ids)
+        category_ids = set([ann['category_id'] for ann in anns])
+        
+        # For each segmentation label, get all of the segmentations under that label
+        for category_id in category_ids:
+            cat_name = id_to_word[category_id]
+            cat_ann_ids = coco_segmentations.getAnnIds(catIds=category_id, imgIds=image_id)
+            compiled_mask = np.zeros((img['height'], img['width']), dtype=bool)
+            
+            # For each segmentation, convert to a binary mask and add to the compiled mask
+            for ann_id in cat_ann_ids:
+                ann = coco_segmentations.loadAnns(ids=ann_id)[0]
+                mask = coco_segmentations.annToMask(ann)
+                mask = mask.astype(bool)
+                compiled_mask = np.logical_or(compiled_mask, mask)
+                
+            # Save to disk
+            file_dir = train_segmentation_annotation_dir + str(image_id)
+            if not os.path.exists(file_dir):
+                os.makedirs(file_dir)
+            file_name = os.path.join(file_dir, cat_name + '.npz')
+            np.savez(file_name, compiled_mask)
+    
+def get_image_ids_with_cap_and_seg(coco_captions, coco_segmentations):
+    ''' Get the images that have both caption and segmentation annotations '''
+    caption_image_ids = coco_captions.getImgIds()
+    segmentation_image_ids = coco_segmentations.getImgIds()
+    overlap = list(set(caption_image_ids) & set(segmentation_image_ids))
+    return overlap
 
 if __name__=="__main__":
     import main
